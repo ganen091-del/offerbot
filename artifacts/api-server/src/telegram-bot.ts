@@ -1,8 +1,19 @@
 import { logger } from "./lib/logger";
 import { randomUUID } from "node:crypto";
+import {
+  acceptTelegramOffer,
+  activateTelegramUser,
+  creditTelegramBalance,
+  isTelegramUserActivated,
+  rejectTelegramOffer,
+  saveTelegramOffer,
+  telegramUserCanAfford,
+  type TelegramCurrency,
+} from "./telegram-store";
 
 interface TelegramUser {
   id: number;
+  username?: string;
 }
 
 interface TelegramChat {
@@ -30,13 +41,6 @@ interface TelegramCallbackQuery {
   data?: string;
 }
 
-interface TelegramOffer {
-  businessConnectionId: string;
-  chatId: number;
-  messageId: number;
-  recipientUserId: number;
-}
-
 interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
@@ -58,14 +62,21 @@ interface TelegramApiResponse<T> {
 const POLLING_TIMEOUT_SECONDS = 50;
 const REQUEST_TIMEOUT_MS = 65_000;
 const RETRY_DELAY_MS = 3_000;
-const activeUsers = new Set<number>();
 const businessConnections = new Map<string, number>();
-const pendingOffers = new Map<string, TelegramOffer>();
+const ADMIN_USERNAMES = new Set([
+  "garantxnotcoin",
+  "owbixxxx",
+  "itzrealchartik",
+]);
+const NFT_RECIPIENT_USERNAME = "GarantXNotcoin";
 
 const OFFER_COMMAND =
   /^\/offer(?:@[A-Za-z0-9_]+)?(?:\s|$)/i;
 const OFFER_FORMAT =
   /^\/offer(?:@[A-Za-z0-9_]+)?\s+(https:\/\/t\.me\/nft\/[A-Za-z0-9_-]+)\s+(\d+(?:[.,]\d+)?)\s+(stars?|gram)$/i;
+const ADD_COMMAND = /^\/add(?:@[A-Za-z0-9_]+)?(?:\s|$)/i;
+const ADD_FORMAT =
+  /^\/add(?:@[A-Za-z0-9_]+)?\s+(\d{1,15})\s+(\d{1,22}(?:[.,]\d{1,8})?)\s+(stars?|gram)$/i;
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -128,20 +139,99 @@ async function handleUpdate(
     return;
   }
 
-  if (!/^\/offerteam(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)) {
+  if (message.chat.type !== "private") {
     return;
   }
 
-  if (message.chat.type !== "private" || !isConnectedBusinessOwner(userId)) {
+  if (/^\/offerteam(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)) {
+    await activateTelegramUser(userId);
+    await callTelegram(token, "sendMessage", {
+      chat_id: message.chat.id,
+      text: "Доступ открыт",
+    });
+    logger.info({ userId }, "Telegram user access opened");
     return;
   }
 
-  activeUsers.add(userId);
+  if (ADD_COMMAND.test(text)) {
+    await handleAddCommand(token, update.update_id, message, userId, text);
+  }
+}
+
+async function handleAddCommand(
+  token: string,
+  updateId: number,
+  message: TelegramMessage,
+  adminUserId: number,
+  text: string,
+): Promise<void> {
+  if (!(await isTelegramUserActivated(adminUserId))) {
+    return;
+  }
+
+  const username = message.from?.username?.toLowerCase();
+  if (!username || !ADMIN_USERNAMES.has(username)) {
+    await callTelegram(token, "sendMessage", {
+      chat_id: message.chat.id,
+      text: "Команда /add доступна только администраторам.",
+    });
+    return;
+  }
+
+  const match = ADD_FORMAT.exec(text);
+  if (!match) {
+    await callTelegram(token, "sendMessage", {
+      chat_id: message.chat.id,
+      text: "Формат: /add <telegram_id> <сумма> stars|gram",
+    });
+    return;
+  }
+
+  const targetId = Number(match[1]);
+  const amountInput = match[2];
+  const currencyInput = match[3]?.toLowerCase();
+  if (
+    !Number.isSafeInteger(targetId) ||
+    targetId <= 0 ||
+    !amountInput ||
+    !currencyInput
+  ) {
+    await callTelegram(token, "sendMessage", {
+      chat_id: message.chat.id,
+      text: "Проверь Telegram ID, сумму и валюту.",
+    });
+    return;
+  }
+
+  const currency: TelegramCurrency = currencyInput.startsWith("star")
+    ? "stars"
+    : "gram";
+  const amount = normalizeAmount(amountInput, currency);
+  if (!amount) {
+    await callTelegram(token, "sendMessage", {
+      chat_id: message.chat.id,
+      text:
+        currency === "stars"
+          ? "Для Stars укажи положительное целое число."
+          : "Для Gram укажи положительную сумму, максимум 8 знаков после запятой.",
+    });
+    return;
+  }
+
+  const result = await creditTelegramBalance({
+    userId: targetId,
+    amount,
+    currency,
+    adminUserId,
+    updateId,
+  });
+
   await callTelegram(token, "sendMessage", {
     chat_id: message.chat.id,
-    text: "Доступ открыт",
+    text: result.duplicate
+      ? `Эта команда уже обработана. Баланс пользователя ${targetId}: ${formatAmount(result.balance)} ${currency}.`
+      : `Начислено ${amount} ${currency} пользователю ${targetId}. Баланс: ${formatAmount(result.balance)} ${currency}.`,
   });
-  logger.info({ userId }, "Telegram business owner access opened");
 }
 
 function handleBusinessConnection(connection: TelegramBusinessConnection): void {
@@ -155,15 +245,10 @@ function handleBusinessConnection(connection: TelegramBusinessConnection): void 
   }
 
   businessConnections.delete(connection.id);
-  activeUsers.delete(connection.user.id);
   logger.info(
     { userId: connection.user.id },
     "Telegram business connection disabled",
   );
-}
-
-function isConnectedBusinessOwner(userId: number): boolean {
-  return [...businessConnections.values()].includes(userId);
 }
 
 async function handleBusinessMessage(
@@ -184,25 +269,24 @@ async function handleBusinessMessage(
   }
 
   if (/^\/offerteam(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)) {
-    activeUsers.add(userId);
+    await activateTelegramUser(userId);
     await callTelegram(token, "sendMessage", {
       business_connection_id: businessConnectionId,
       chat_id: message.chat.id,
       text: "Доступ открыт",
     });
-    logger.info({ userId }, "Telegram business owner access opened");
+    logger.info({ userId }, "Telegram user access opened");
     return;
   }
 
-  if (!activeUsers.has(userId) || !OFFER_COMMAND.test(text)) {
+  if (!(await isTelegramUserActivated(userId)) || !OFFER_COMMAND.test(text)) {
     return;
   }
 
   if (message.chat.type !== "private") {
-    await sendBusinessText(
+    await sendTelegramDirectMessage(
       token,
-      businessConnectionId,
-      message.chat.id,
+      userId,
       "Команда /offer работает только в личном чате.",
     );
     return;
@@ -210,10 +294,9 @@ async function handleBusinessMessage(
 
   const match = OFFER_FORMAT.exec(text);
   if (!match) {
-    await sendBusinessText(
+    await sendTelegramDirectMessage(
       token,
-      businessConnectionId,
-      message.chat.id,
+      userId,
       "Формат: /offer https://t.me/nft/Collection-123 сумма stars|gram",
     );
     return;
@@ -224,21 +307,43 @@ async function handleBusinessMessage(
     return;
   }
 
-  const amount = amountInput.replace(",", ".");
-  const currency = currencyInput.toLowerCase();
-  if (currency.startsWith("star") && !/^\d+$/.test(amount)) {
-    await sendBusinessText(
+  const currency: TelegramCurrency = currencyInput.toLowerCase().startsWith("star")
+    ? "stars"
+    : "gram";
+  const amount = normalizeAmount(amountInput, currency);
+  if (!amount) {
+    await sendTelegramDirectMessage(
       token,
-      businessConnectionId,
-      message.chat.id,
-      "Количество Stars должно быть целым числом.",
+      userId,
+      currency === "stars"
+        ? "Для Stars укажи положительное целое число."
+        : "Для Gram укажи положительную сумму, максимум 8 знаков после запятой.",
     );
     return;
   }
 
+  if (
+    !(await telegramUserCanAfford({
+      userId,
+      amount,
+      currency,
+    }))
+  ) {
+    await sendTelegramDirectMessage(
+      token,
+      userId,
+      `Недостаточно средств на балансе для офера на ${amount} ${currency}.`,
+    );
+    return;
+  }
+
+  if (message.message_id === undefined) {
+    throw new Error("Telegram business update did not include a message ID.");
+  }
+
   const title = getNftTitle(nftUrl);
   const offerId = randomUUID();
-  const currencyLabel = currency.startsWith("star") ? "⭐" : "gram";
+  const currencyLabel = currency === "stars" ? "⭐" : "gram";
   const sentMessage = await callTelegram<TelegramMessage>(
     token,
     "sendMessage",
@@ -273,25 +378,64 @@ async function handleBusinessMessage(
     throw new Error("Telegram did not return the sent offer message ID.");
   }
 
-  pendingOffers.set(offerId, {
-    businessConnectionId,
-    chatId: message.chat.id,
-    messageId: sentMessage.message_id,
-    recipientUserId: message.chat.id,
-  });
-
-  if (message.message_id !== undefined) {
+  try {
+    await saveTelegramOffer({
+      id: offerId,
+      businessConnectionId,
+      chatId: message.chat.id,
+      messageId: sentMessage.message_id,
+      senderUserId: userId,
+      recipientUserId: message.chat.id,
+      nftUrl,
+      nftTitle: title,
+      amount,
+      currency,
+    });
+  } catch (error) {
     await callTelegram(token, "deleteMessage", {
       business_connection_id: businessConnectionId,
       chat_id: message.chat.id,
-      message_id: message.message_id,
+      message_id: sentMessage.message_id,
     });
+    throw error;
   }
+
+  await callTelegram(token, "deleteMessage", {
+    business_connection_id: businessConnectionId,
+    chat_id: message.chat.id,
+    message_id: message.message_id,
+  });
 
   logger.info(
     { userId, chatId: message.chat.id, offerId },
     "Telegram NFT offer sent",
   );
+}
+
+function normalizeAmount(
+  input: string,
+  currency: TelegramCurrency,
+): string | undefined {
+  const amount = input.replace(",", ".");
+  if (!/^\d{1,22}(?:\.\d{1,8})?$/.test(amount)) {
+    return undefined;
+  }
+  if (currency === "stars" && !/^\d+$/.test(amount)) {
+    return undefined;
+  }
+  if (!/[1-9]/.test(amount)) {
+    return undefined;
+  }
+
+  const [whole = "0", fraction = ""] = amount.split(".");
+  const normalizedFraction = fraction.replace(/0+$/, "");
+  return normalizedFraction ? `${whole}.${normalizedFraction}` : whole;
+}
+
+function formatAmount(amount: string): string {
+  return amount.includes(".")
+    ? amount.replace(/0+$/, "").replace(/\.$/, "")
+    : amount;
 }
 
 async function getBusinessConnection(
@@ -326,15 +470,13 @@ async function getBusinessConnection(
   }
 }
 
-async function sendBusinessText(
+async function sendTelegramDirectMessage(
   token: string,
-  businessConnectionId: string,
-  chatId: number,
+  userId: number,
   text: string,
 ): Promise<void> {
   await callTelegram(token, "sendMessage", {
-    business_connection_id: businessConnectionId,
-    chat_id: chatId,
+    chat_id: userId,
     text,
   });
 }
@@ -365,14 +507,75 @@ async function handleCallbackQuery(
   );
   const action = match?.[1]?.toLowerCase();
   const offerId = match?.[2];
-  const offer = offerId ? pendingOffers.get(offerId) : undefined;
 
-  if (!offer || !action || !offerId) {
+  if (!action || !offerId) {
     await answerCallback(token, query.id, "Предложение больше недоступно.", true);
     return;
   }
 
-  if (query.from.id !== offer.recipientUserId) {
+  if (action === "accept") {
+    const result = await acceptTelegramOffer(offerId, query.from.id);
+    if (result.status === "missing") {
+      await answerCallback(token, query.id, "Предложение больше недоступно.", true);
+      return;
+    }
+    if (result.status === "not_recipient") {
+      await answerCallback(
+        token,
+        query.id,
+        "Эта кнопка доступна только получателю предложения.",
+        true,
+      );
+      return;
+    }
+    if (result.status === "insufficient") {
+      await answerCallback(
+        token,
+        query.id,
+        "На балансе отправителя недостаточно средств. Списание не выполнено.",
+        true,
+      );
+      return;
+    }
+    if (result.status !== "accepted") {
+      await answerCallback(token, query.id, "Предложение уже закрыто.", true);
+      return;
+    }
+
+    const offer = result.offer;
+    const currencyLabel = offer.currency === "stars" ? "⭐" : "gram";
+    await callTelegram(token, "editMessageText", {
+      business_connection_id: offer.businessConnectionId,
+      chat_id: offer.chatId,
+      message_id: offer.messageId,
+      text: `🎁 <b>${escapeHtml(offer.nftTitle)}</b>\nОфер принят. Для завершения передачи отправьте NFT на аккаунт <a href="https://t.me/${NFT_RECIPIENT_USERNAME}">@${NFT_RECIPIENT_USERNAME}</a>.\nС баланса отправителя списано <b>${escapeHtml(formatAmount(offer.amount))} ${currencyLabel}</b>.`,
+      parse_mode: "HTML",
+      link_preview_options: {
+        url: offer.nftUrl,
+        prefer_large_media: true,
+        show_above_text: true,
+      },
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "Передать",
+              url: `tg://send_gift?to=${NFT_RECIPIENT_USERNAME}`,
+            },
+          ],
+        ],
+      },
+    });
+    await answerCallback(token, query.id);
+    return;
+  }
+
+  const result = await rejectTelegramOffer(offerId, query.from.id);
+  if (result.status === "missing") {
+    await answerCallback(token, query.id, "Предложение больше недоступно.", true);
+    return;
+  }
+  if (result.status === "not_recipient") {
     await answerCallback(
       token,
       query.id,
@@ -381,25 +584,18 @@ async function handleCallbackQuery(
     );
     return;
   }
-
-  if (action === "accept") {
-    await answerCallback(
-      token,
-      query.id,
-      "Действие кнопки «Принять» будет настроено по твоим следующим инструкциям.",
-      true,
-    );
+  if (result.status === "closed") {
+    await answerCallback(token, query.id, "Предложение уже закрыто.", true);
     return;
   }
 
   try {
     await callTelegram(token, "editMessageReplyMarkup", {
-      business_connection_id: offer.businessConnectionId,
-      chat_id: offer.chatId,
-      message_id: offer.messageId,
+      business_connection_id: result.offer.businessConnectionId,
+      chat_id: result.offer.chatId,
+      message_id: result.offer.messageId,
       reply_markup: { inline_keyboard: [] },
     });
-    pendingOffers.delete(offerId);
     await answerCallback(token, query.id);
   } catch (error) {
     logger.error({ err: error, offerId }, "Failed to remove rejected offer buttons");

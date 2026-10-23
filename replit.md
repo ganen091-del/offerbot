@@ -31,7 +31,7 @@ _Populate as you build — non-obvious choices a reader couldn't infer from the 
 
 ## Product
 
-The bot ignores messages from users until they send `/offerteam`. It then replies «Доступ открыт» and marks that Telegram user as activated for the current bot process. Feature-specific replies after activation are pending the user's instructions.
+The bot ignores messages from users until they send `/offerteam`, then persists their access. Activated users can create NFT offers from an authorized Telegram Business account. Offers are paid from the sender's Stars/Gram balance; configured admins can top up balances with `/add`.
 
 ## User preferences
 
