@@ -1,0 +1,1 @@
+- [Offer bot balances](offer-bot-balance.md) — Stars/Gram ledger; accepted offers debit the offer sender.
