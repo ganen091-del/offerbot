@@ -1,6 +1,6 @@
-# [Project name]
+# Telegram Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Telegram bot that stays silent until a user sends `/offerteam`, then confirms access with «Доступ открыт».
 
 ## Run & Operate
 
@@ -9,6 +9,7 @@ _Replace the heading above with the project's name, and this line with one sente
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
+- Required secret: `TELEGRAM_BOT_TOKEN` — Telegram bot token, stored in Replit Secrets
 - Required env: `DATABASE_URL` — Postgres connection string
 
 ## Stack
@@ -30,7 +31,7 @@ _Populate as you build — non-obvious choices a reader couldn't infer from the 
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+The bot ignores messages from users until they send `/offerteam`. It then replies «Доступ открыт» and marks that Telegram user as activated for the current bot process. Feature-specific replies after activation are pending the user's instructions.
 
 ## User preferences
 
