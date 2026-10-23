@@ -7,7 +7,6 @@ import {
   isTelegramUserActivated,
   rejectTelegramOffer,
   saveTelegramOffer,
-  telegramUserCanAfford,
   type TelegramCurrency,
 } from "./telegram-store";
 
@@ -283,6 +282,11 @@ async function handleBusinessMessage(
     return;
   }
 
+  logger.info(
+    { userId, chatId: message.chat.id, chatType: message.chat.type },
+    "Telegram business offer command received",
+  );
+
   if (message.chat.type !== "private") {
     await sendTelegramDirectMessage(
       token,
@@ -318,21 +322,6 @@ async function handleBusinessMessage(
       currency === "stars"
         ? "Для Stars укажи положительное целое число."
         : "Для Gram укажи положительную сумму, максимум 8 знаков после запятой.",
-    );
-    return;
-  }
-
-  if (
-    !(await telegramUserCanAfford({
-      userId,
-      amount,
-      currency,
-    }))
-  ) {
-    await sendTelegramDirectMessage(
-      token,
-      userId,
-      `Недостаточно средств на балансе для офера на ${amount} ${currency}.`,
     );
     return;
   }
