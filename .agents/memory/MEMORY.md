@@ -1,1 +1,2 @@
 - [Offer bot balances](offer-bot-balance.md) — Stars/Gram ledger; accepted offers debit the offer sender.
+- [Telegram Business deletion](telegram-business-message-deletion.md) — use `deleteBusinessMessages` for connected Business chats, not `deleteMessage`.

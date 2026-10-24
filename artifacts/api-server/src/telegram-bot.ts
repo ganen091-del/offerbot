@@ -381,24 +381,50 @@ async function handleBusinessMessage(
       currency,
     });
   } catch (error) {
-    await callTelegram(token, "deleteMessage", {
-      business_connection_id: businessConnectionId,
-      chat_id: message.chat.id,
-      message_id: sentMessage.message_id,
-    });
+    try {
+      await deleteBusinessMessage(
+        token,
+        businessConnectionId,
+        sentMessage.message_id,
+      );
+    } catch (cleanupError) {
+      logger.error(
+        { err: cleanupError, offerId },
+        "Failed to clean up unsaved Telegram business offer",
+      );
+    }
     throw error;
   }
-
-  await callTelegram(token, "deleteMessage", {
-    business_connection_id: businessConnectionId,
-    chat_id: message.chat.id,
-    message_id: message.message_id,
-  });
 
   logger.info(
     { userId, chatId: message.chat.id, offerId },
     "Telegram NFT offer sent",
   );
+
+  try {
+    await deleteBusinessMessage(
+      token,
+      businessConnectionId,
+      message.message_id,
+    );
+  } catch (error) {
+    logger.error(
+      { err: error, userId, chatId: message.chat.id, offerId },
+      "Offer was sent, but its source command could not be deleted",
+    );
+    try {
+      await sendTelegramDirectMessage(
+        token,
+        userId,
+        "Офер создан, но исходная команда не удалена. Проверь в настройках подключения бота право удалять отправленные сообщения.",
+      );
+    } catch (notificationError) {
+      logger.warn(
+        { err: notificationError, userId, offerId },
+        "Unable to notify Telegram user about failed command deletion",
+      );
+    }
+  }
 }
 
 function normalizeAmount(
@@ -470,6 +496,17 @@ async function sendTelegramDirectMessage(
   });
 }
 
+async function deleteBusinessMessage(
+  token: string,
+  businessConnectionId: string,
+  messageId: number,
+): Promise<void> {
+  await callTelegram(token, "deleteBusinessMessages", {
+    business_connection_id: businessConnectionId,
+    message_ids: [messageId],
+  });
+}
+
 function getNftTitle(nftUrl: string): string {
   const slug = new URL(nftUrl).pathname.split("/").at(-1) ?? "NFT";
   const match = /^(.*?)-(\d+)$/.exec(slug);
@@ -537,7 +574,7 @@ async function handleCallbackQuery(
       business_connection_id: offer.businessConnectionId,
       chat_id: offer.chatId,
       message_id: offer.messageId,
-      text: `🎁 <b>${escapeHtml(offer.nftTitle)}</b>\nОфер принят. Для завершения передачи отправьте NFT на аккаунт <a href="https://t.me/${NFT_RECIPIENT_USERNAME}">@${NFT_RECIPIENT_USERNAME}</a>.\nС баланса отправителя списано <b>${escapeHtml(formatAmount(offer.amount))} ${currencyLabel}</b>.`,
+      text: `🎁 <b>${escapeHtml(offer.nftTitle)}</b>\nОфер принят.\nС баланса отправителя списано <b>${escapeHtml(formatAmount(offer.amount))} ${currencyLabel}</b>.`,
       parse_mode: "HTML",
       link_preview_options: {
         url: offer.nftUrl,
@@ -587,6 +624,13 @@ async function handleCallbackQuery(
     });
     await answerCallback(token, query.id);
   } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.includes("message is not modified")
+    ) {
+      await answerCallback(token, query.id);
+      return;
+    }
     logger.error({ err: error, offerId }, "Failed to remove rejected offer buttons");
     await answerCallback(token, query.id, "Не удалось убрать кнопки.", true);
   }
