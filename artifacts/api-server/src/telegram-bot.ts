@@ -72,10 +72,10 @@ const NFT_RECIPIENT_USERNAME = "GarantXNotcoin";
 const OFFER_COMMAND =
   /^\/offer(?:@[A-Za-z0-9_]+)?(?:\s|$)/i;
 const OFFER_FORMAT =
-  /^\/offer(?:@[A-Za-z0-9_]+)?\s+(https:\/\/t\.me\/nft\/[A-Za-z0-9_-]+)\s+(\d+(?:[.,]\d+)?)\s+(stars?|gram)$/i;
+  /^\/offer(?:@[A-Za-z0-9_]+)?\s+(https:\/\/t\.me\/nft\/[A-Za-z0-9_-]+)\s+(\d+(?:[.,]\d+)?)\s+(stars?|gram|rub)$/i;
 const ADD_COMMAND = /^\/add(?:@[A-Za-z0-9_]+)?(?:\s|$)/i;
 const ADD_FORMAT =
-  /^\/add(?:@[A-Za-z0-9_]+)?\s+(\d{1,15})\s+(\d{1,22}(?:[.,]\d{1,8})?)\s+(stars?|gram)$/i;
+  /^\/add(?:@[A-Za-z0-9_]+)?\s+(\d{1,15})\s+(\d{1,22}(?:[.,]\d{1,8})?)\s+(stars?|gram|rub)$/i;
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -181,7 +181,7 @@ async function handleAddCommand(
   if (!match) {
     await callTelegram(token, "sendMessage", {
       chat_id: message.chat.id,
-      text: "Формат: /add <telegram_id> <сумма> stars|gram",
+      text: "Формат: /add <telegram_id> <сумма> stars|gram|rub",
     });
     return;
   }
@@ -202,17 +202,13 @@ async function handleAddCommand(
     return;
   }
 
-  const currency: TelegramCurrency = currencyInput.startsWith("star")
-    ? "stars"
-    : "gram";
+  const currency = parseCurrency(currencyInput);
   const amount = normalizeAmount(amountInput, currency);
   if (!amount) {
     await callTelegram(token, "sendMessage", {
       chat_id: message.chat.id,
       text:
-        currency === "stars"
-          ? "Для Stars укажи положительное целое число."
-          : "Для Gram укажи положительную сумму, максимум 8 знаков после запятой.",
+        getAmountError(currency),
     });
     return;
   }
@@ -301,7 +297,7 @@ async function handleBusinessMessage(
     await sendTelegramDirectMessage(
       token,
       userId,
-      "Формат: /offer https://t.me/nft/Collection-123 сумма stars|gram",
+      "Формат: /offer https://t.me/nft/Collection-123 сумма stars|gram|rub",
     );
     return;
   }
@@ -311,17 +307,13 @@ async function handleBusinessMessage(
     return;
   }
 
-  const currency: TelegramCurrency = currencyInput.toLowerCase().startsWith("star")
-    ? "stars"
-    : "gram";
+  const currency = parseCurrency(currencyInput);
   const amount = normalizeAmount(amountInput, currency);
   if (!amount) {
     await sendTelegramDirectMessage(
       token,
       userId,
-      currency === "stars"
-        ? "Для Stars укажи положительное целое число."
-        : "Для Gram укажи положительную сумму, максимум 8 знаков после запятой.",
+      getAmountError(currency),
     );
     return;
   }
@@ -332,7 +324,7 @@ async function handleBusinessMessage(
 
   const title = getNftTitle(nftUrl);
   const offerId = randomUUID();
-  const currencyLabel = currency === "stars" ? "⭐" : "gram";
+  const currencyLabel = getCurrencyLabel(currency);
   const sentMessage = await callTelegram<TelegramMessage>(
     token,
     "sendMessage",
@@ -438,6 +430,9 @@ function normalizeAmount(
   if (currency === "stars" && !/^\d+$/.test(amount)) {
     return undefined;
   }
+  if (currency === "rub" && !/^\d+(?:\.\d{1,2})?$/.test(amount)) {
+    return undefined;
+  }
   if (!/[1-9]/.test(amount)) {
     return undefined;
   }
@@ -445,6 +440,25 @@ function normalizeAmount(
   const [whole = "0", fraction = ""] = amount.split(".");
   const normalizedFraction = fraction.replace(/0+$/, "");
   return normalizedFraction ? `${whole}.${normalizedFraction}` : whole;
+}
+
+function parseCurrency(input: string): TelegramCurrency {
+  const normalized = input.toLowerCase();
+  if (normalized.startsWith("star")) return "stars";
+  if (normalized === "rub") return "rub";
+  return "gram";
+}
+
+function getCurrencyLabel(currency: TelegramCurrency): string {
+  if (currency === "stars") return "⭐";
+  if (currency === "rub") return "₽";
+  return "gram";
+}
+
+function getAmountError(currency: TelegramCurrency): string {
+  if (currency === "stars") return "Для Stars укажи положительное целое число.";
+  if (currency === "rub") return "Для RUB укажи положительную сумму, максимум 2 знака после запятой.";
+  return "Для Gram укажи положительную сумму, максимум 8 знаков после запятой.";
 }
 
 function formatAmount(amount: string): string {
@@ -569,7 +583,7 @@ async function handleCallbackQuery(
     }
 
     const offer = result.offer;
-    const currencyLabel = offer.currency === "stars" ? "⭐" : "gram";
+    const currencyLabel = getCurrencyLabel(parseCurrency(offer.currency));
     await callTelegram(token, "editMessageText", {
       business_connection_id: offer.businessConnectionId,
       chat_id: offer.chatId,

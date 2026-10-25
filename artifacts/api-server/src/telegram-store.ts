@@ -8,7 +8,7 @@ import {
   telegramOffers,
 } from "@workspace/db";
 
-export type TelegramCurrency = "stars" | "gram";
+export type TelegramCurrency = "stars" | "gram" | "rub";
 
 export async function activateTelegramUser(userId: number): Promise<void> {
   await db

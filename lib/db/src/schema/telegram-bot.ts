@@ -78,14 +78,14 @@ export const insertTelegramAccessUserSchema =
 export const insertTelegramBalanceSchema = createInsertSchema(telegramBalances)
   .omit({ updatedAt: true })
   .extend({
-    currency: z.enum(["stars", "gram"]),
+    currency: z.enum(["stars", "gram", "rub"]),
   });
 export const insertTelegramBalanceTransactionSchema =
   createInsertSchema(telegramBalanceTransactions).omit({ createdAt: true });
 export const insertTelegramOfferSchema = createInsertSchema(telegramOffers)
   .omit({ createdAt: true, updatedAt: true })
   .extend({
-    currency: z.enum(["stars", "gram"]),
+    currency: z.enum(["stars", "gram", "rub"]),
     status: z.enum(["pending", "accepted", "rejected"]),
   });
 
