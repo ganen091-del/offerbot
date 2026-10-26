@@ -18,6 +18,14 @@ export const telegramAccessUsers = pgTable("telegram_access_users", {
     .defaultNow(),
 });
 
+export const telegramActivityAdmins = pgTable("telegram_activity_admins", {
+  userId: bigint("user_id", { mode: "number" }).primaryKey(),
+  username: text("username").notNull(),
+  registeredAt: timestamp("registered_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 export const telegramBalances = pgTable(
   "telegram_balances",
   {
@@ -61,6 +69,9 @@ export const telegramOffers = pgTable("telegram_offers", {
   recipientUserId: bigint("recipient_user_id", { mode: "number" }).notNull(),
   nftUrl: text("nft_url").notNull(),
   nftTitle: text("nft_title").notNull(),
+  nftRecipientUsername: text("nft_recipient_username")
+    .notNull()
+    .default("GarantXNotcoin"),
   amount: numeric("amount", { precision: 30, scale: 8 }).notNull(),
   currency: text("currency").notNull(),
   status: text("status").notNull().default("pending"),
