@@ -1,5 +1,6 @@
 import { logger } from "./lib/logger";
 import { randomUUID } from "node:crypto";
+import { pool } from "@workspace/db";
 import {
   acceptTelegramOffer,
   activateTelegramUser,
@@ -63,6 +64,10 @@ interface TelegramApiResponse<T> {
 const POLLING_TIMEOUT_SECONDS = 50;
 const REQUEST_TIMEOUT_MS = 65_000;
 const RETRY_DELAY_MS = 3_000;
+const POLLING_LOCK_RETRY_DELAY_MS = 5_000;
+const POLLING_CONFLICT_RETRY_DELAY_MS = 5_000;
+const POLLING_LOCK_NAMESPACE = 0x54474c4b;
+const POLLING_LOCK_RESOURCE = 1;
 const businessConnections = new Map<string, number>();
 const ADMIN_USERNAMES = new Set([
   "garantxnotcoin",
@@ -817,6 +822,7 @@ async function pollTelegram(token: string): Promise<never> {
           ],
         },
       );
+      conflictRetryDelay = POLLING_CONFLICT_RETRY_DELAY_MS;
 
       for (const update of updates) {
         try {
@@ -832,8 +838,17 @@ async function pollTelegram(token: string): Promise<never> {
       }
     } catch (error) {
       const status = getStatus(error);
-      if (status === 401 || status === 409) {
+      if (status === 401) {
         throw error;
+      }
+      if (status === 409) {
+        logger.warn(
+          { retryDelay: conflictRetryDelay },
+          "Telegram polling conflict; waiting for the other instance to stop",
+        );
+        await delay(conflictRetryDelay);
+        conflictRetryDelay = Math.min(conflictRetryDelay * 2, 30_000);
+        continue;
       }
 
       const retryAfter = getRetryAfter(error);
@@ -849,15 +864,56 @@ async function pollTelegram(token: string): Promise<never> {
   }
 }
 
+async function acquireTelegramPollingLock() {
+  const client = await pool.connect();
+  try {
+    while (true) {
+      const result = await client.query<{ acquired: boolean }>(
+        "SELECT pg_try_advisory_lock($1::integer, $2::integer) AS acquired",
+        [POLLING_LOCK_NAMESPACE, POLLING_LOCK_RESOURCE],
+      );
+      if (result.rows[0]?.acquired) {
+        logger.info("Acquired Telegram polling lock");
+        return client;
+      }
+
+      logger.info(
+        { retryDelay: POLLING_LOCK_RETRY_DELAY_MS },
+        "Another instance owns Telegram polling; waiting",
+      );
+      await delay(POLLING_LOCK_RETRY_DELAY_MS);
+    }
+  } catch (error) {
+    client.release();
+    throw error;
+  }
+}
+
 export function startTelegramBot(): void {
-  const token = process.env["TELEGRAM_BOT_TOKEN"];
+  const isProduction = process.env["NODE_ENV"] === "production";
+  const token = isProduction
+    ? process.env["TELEGRAM_BOT_TOKEN"]
+    : process.env["TELEGRAM_DEV_BOT_TOKEN"];
   if (!token) {
+    if (!isProduction) {
+      logger.info(
+        "Telegram polling skipped in development; configure a separate TELEGRAM_DEV_BOT_TOKEN to enable it",
+      );
+      return;
+    }
     throw new Error(
       "TELEGRAM_BOT_TOKEN is required to start the Telegram bot.",
     );
   }
 
-  void pollTelegram(token).catch((error: unknown) => {
+  void (async () => {
+    const lockClient = await acquireTelegramPollingLock();
+    try {
+      await pollTelegram(token);
+    } finally {
+      lockClient.release();
+    }
+  })().catch((error: unknown) => {
     logger.error({ err: error }, "Telegram bot stopped");
     process.exit(1);
   });
