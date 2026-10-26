@@ -805,6 +805,7 @@ async function pollTelegram(token: string): Promise<never> {
   );
 
   let offset: number | undefined;
+  let conflictRetryDelay = POLLING_CONFLICT_RETRY_DELAY_MS;
 
   while (true) {
     try {
