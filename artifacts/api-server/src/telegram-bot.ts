@@ -72,9 +72,7 @@ const POLLING_LOCK_NAMESPACE = 0x54474c4b;
 const POLLING_LOCK_RESOURCE = 1;
 const businessConnections = new Map<string, number>();
 const ADMIN_USERNAMES = new Set([
-  "garantxnotcoin",
   "owbixxxx",
-  "itzrealchartik",
 ]);
 const DEFAULT_NFT_RECIPIENT_USERNAME = "GarantXNotcoin";
 
@@ -332,9 +330,8 @@ async function handleBusinessMessage(
   }
 
   const senderUsername = message.from?.username?.toLowerCase();
-  const isWhitelistedOfferSender = senderUsername === "vansluo";
   if (
-    (!(await isTelegramUserActivated(userId)) && !isWhitelistedOfferSender) ||
+    !(await isTelegramUserActivated(userId)) ||
     !OFFER_COMMAND.test(text)
   ) {
     return;
@@ -354,7 +351,7 @@ async function handleBusinessMessage(
     return;
   }
 
-  const canChooseRecipient = isWhitelistedOfferSender ||
+  const canChooseRecipient =
     await hasTelegramRecipientPermission(userId, senderUsername);
   const match = OFFER_FORMAT.exec(text);
   if (!match) {
@@ -371,14 +368,6 @@ async function handleBusinessMessage(
   const [, nftUrl, amountInput, currencyInput, requestedRecipientUsername] =
     match;
   if (!nftUrl || !amountInput || !currencyInput) {
-    return;
-  }
-  if (isWhitelistedOfferSender && !requestedRecipientUsername) {
-    await sendTelegramDirectMessage(
-      token,
-      userId,
-      "Для @vansLuo укажи получателя NFT в конце команды: @username.",
-    );
     return;
   }
   if (!canChooseRecipient && requestedRecipientUsername) {

@@ -80,6 +80,13 @@ test("admin recipient grants and per-offer routing (mock Telegram, development D
     assert.match(calls[0]!.payload.text, /только администраторам/);
     assert.equal(await hasTelegramRecipientPermission(memberId, username), false);
 
+    for (const formerAdmin of ["garantxnotcoin", "itzrealchartik"]) {
+      await command(ordinaryId, formerAdmin, `/dostup @${username}`);
+      assert.match(calls[0]!.payload.text, /только администраторам/);
+      await command(ordinaryId, formerAdmin, `/add ${memberId} 15 stars`);
+      assert.match(calls[0]!.payload.text, /только администраторам/);
+    }
+
     await command(adminId, "OWBIXXXX", "/dostup invalid!");
     assert.match(calls[0]!.payload.text, /Формат/);
     await command(adminId, "OWBIXXXX", `/dostup @${username.toUpperCase()}`);
@@ -127,9 +134,21 @@ test("admin recipient grants and per-offer routing (mock Telegram, development D
     assert.equal((await lastOffer()).nft_recipient_username, "GarantXNotcoin");
 
     await offer(legacyId, "vansLuo", "");
-    assert.match(calls.find((call) => call.method === "sendMessage")!.payload.text,
-      /укажи получателя/);
+    assert.ok(!calls.some((call) => call.method === "sendMessage"),
+      "the former whitelisted user must activate just like everyone else");
+    await activateTelegramUser(legacyId);
     await offer(legacyId, "vansLuo", " @legacy_recipient");
+    assert.match(calls.find((call) => call.method === "sendMessage")!.payload.text,
+      /после выдачи администратором/);
+    assert.equal(await lastOffer(), undefined);
+    await offer(legacyId, "vansLuo", "");
+    assert.equal((await lastOffer()).nft_recipient_username, "GarantXNotcoin");
+
+    // Use a synthetic username for the grant so this test never claims a real
+    // user's pending permission. Re-granted users follow the same normal path.
+    const regrantUsername = `regrant_${base}`;
+    await command(adminId, "owbixxxx", `/dostup @${regrantUsername}`);
+    await offer(legacyId, regrantUsername, " @legacy_recipient");
     assert.equal((await lastOffer()).nft_recipient_username, "legacy_recipient");
   } finally {
     globalThis.fetch = originalFetch;
@@ -137,7 +156,7 @@ test("admin recipient grants and per-offer routing (mock Telegram, development D
     await pool.query("DELETE FROM telegram_balances WHERE user_id = ANY($1::bigint[])", [[memberId]]);
     await pool.query("DELETE FROM telegram_offers WHERE business_connection_id = ANY($1::text[])", [businessIds]);
     await pool.query("DELETE FROM telegram_recipient_permissions WHERE granted_by_user_id = $1", [adminId]);
-    await pool.query("DELETE FROM telegram_access_users WHERE user_id = ANY($1::bigint[])", [[adminId, memberId, ordinaryId]]);
+    await pool.query("DELETE FROM telegram_access_users WHERE user_id = ANY($1::bigint[])", [[adminId, memberId, ordinaryId, legacyId]]);
     await pool.end();
   }
 });
