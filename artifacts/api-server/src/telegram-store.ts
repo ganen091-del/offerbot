@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, isNull, sql } from "drizzle-orm";
 import {
   db,
   telegramActivityAdmins,
@@ -7,9 +7,45 @@ import {
   telegramBalanceTransactions,
   telegramBalances,
   telegramOffers,
+  telegramRecipientPermissions,
 } from "@workspace/db";
 
 export type TelegramCurrency = "stars" | "gram" | "rub";
+
+export async function grantTelegramRecipientPermission(
+  username: string,
+  adminUserId: number,
+): Promise<void> {
+  await db.insert(telegramRecipientPermissions)
+    .values({
+      username: username.toLowerCase(),
+      grantedByUserId: adminUserId,
+    })
+    .onConflictDoNothing({ target: telegramRecipientPermissions.username });
+}
+
+export async function hasTelegramRecipientPermission(
+  userId: number,
+  username?: string,
+): Promise<boolean> {
+  const existing = await db.select({ username: telegramRecipientPermissions.username })
+    .from(telegramRecipientPermissions)
+    .where(eq(telegramRecipientPermissions.userId, userId))
+    .limit(1);
+  if (existing.length > 0) return true;
+  if (!username) return false;
+
+  // Resolve the username from an authentic Telegram update, then bind the grant
+  // to a stable ID so later username reassignment cannot transfer the permission.
+  const claimed = await db.update(telegramRecipientPermissions)
+    .set({ userId })
+    .where(and(
+      eq(telegramRecipientPermissions.username, username.toLowerCase()),
+      isNull(telegramRecipientPermissions.userId),
+    ))
+    .returning({ userId: telegramRecipientPermissions.userId });
+  return claimed.length > 0;
+}
 
 export async function registerTelegramActivityAdmin(input: {
   userId: number;

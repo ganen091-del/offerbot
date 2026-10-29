@@ -26,6 +26,13 @@ export const telegramActivityAdmins = pgTable("telegram_activity_admins", {
     .defaultNow(),
 });
 
+export const telegramRecipientPermissions = pgTable("telegram_recipient_permissions", {
+  username: text("username").primaryKey(),
+  userId: bigint("user_id", { mode: "number" }),
+  grantedByUserId: bigint("granted_by_user_id", { mode: "number" }).notNull(),
+  grantedAt: timestamp("granted_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const telegramBalances = pgTable(
   "telegram_balances",
   {

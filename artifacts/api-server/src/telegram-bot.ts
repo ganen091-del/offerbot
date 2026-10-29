@@ -6,6 +6,8 @@ import {
   activateTelegramUser,
   creditTelegramBalance,
   getTelegramActivityAdminIds,
+  grantTelegramRecipientPermission,
+  hasTelegramRecipientPermission,
   isTelegramUserActivated,
   registerTelegramActivityAdmin,
   rejectTelegramOffer,
@@ -81,6 +83,8 @@ const OFFER_COMMAND =
 const OFFER_FORMAT =
   /^\/offer(?:@[A-Za-z0-9_]+)?\s+(https:\/\/t\.me\/nft\/[A-Za-z0-9_-]+)\s+(\d+(?:[.,]\d+)?)\s+(stars?|gram|rub)(?:\s+@([A-Za-z0-9_]{5,32}))?$/i;
 const ADD_COMMAND = /^\/add(?:@[A-Za-z0-9_]+)?(?:\s|$)/i;
+const DOSTUP_COMMAND = /^\/dostup(?:@[A-Za-z0-9_]+)?(?:\s|$)/i;
+const DOSTUP_FORMAT = /^\/dostup(?:@[A-Za-z0-9_]+)?\s+@?([A-Za-z0-9_]{5,32})$/i;
 const ADD_FORMAT =
   /^\/add(?:@[A-Za-z0-9_]+)?\s+(\d{1,15})\s+(\d{1,22}(?:[.,]\d{1,8})?)\s+(stars?|gram|rub)$/i;
 
@@ -118,7 +122,7 @@ async function callTelegram<T>(
   return result.result;
 }
 
-async function handleUpdate(
+export async function handleUpdate(
   token: string,
   update: TelegramUpdate,
 ): Promise<void> {
@@ -168,7 +172,46 @@ async function handleUpdate(
 
   if (ADD_COMMAND.test(text)) {
     await handleAddCommand(token, update.update_id, message, userId, text);
+    return;
   }
+
+  if (DOSTUP_COMMAND.test(text)) {
+    await handleDostupCommand(token, message, userId, text);
+  }
+}
+
+async function handleDostupCommand(
+  token: string,
+  message: TelegramMessage,
+  adminUserId: number,
+  text: string,
+): Promise<void> {
+  if (!(await isTelegramUserActivated(adminUserId))) return;
+
+  const username = message.from?.username?.toLowerCase();
+  if (!username || !ADMIN_USERNAMES.has(username)) {
+    await callTelegram(token, "sendMessage", {
+      chat_id: message.chat.id,
+      text: "Команда /dostup доступна только администраторам.",
+    });
+    return;
+  }
+
+  const match = DOSTUP_FORMAT.exec(text);
+  const targetUsername = match?.[1]?.toLowerCase();
+  if (!targetUsername) {
+    await callTelegram(token, "sendMessage", {
+      chat_id: message.chat.id,
+      text: "Формат: /dostup @username",
+    });
+    return;
+  }
+
+  await grantTelegramRecipientPermission(targetUsername, adminUserId);
+  await callTelegram(token, "sendMessage", {
+    chat_id: message.chat.id,
+    text: `Доступ для @${targetUsername} выдан. После /offerteam пользователь может писать:\n/offer https://t.me/nft/Collection-123 1500 stars @получатель\nБез @получателя NFT направляется на прежний аккаунт @${DEFAULT_NFT_RECIPIENT_USERNAME}.`,
+  });
 }
 
 async function handleAddCommand(
@@ -311,12 +354,14 @@ async function handleBusinessMessage(
     return;
   }
 
+  const canChooseRecipient = isWhitelistedOfferSender ||
+    await hasTelegramRecipientPermission(userId, senderUsername);
   const match = OFFER_FORMAT.exec(text);
   if (!match) {
     await sendTelegramDirectMessage(
       token,
       userId,
-      isWhitelistedOfferSender
+      canChooseRecipient
         ? "Формат: /offer https://t.me/nft/Collection-123 сумма stars|gram|rub @получатель"
         : "Формат: /offer https://t.me/nft/Collection-123 сумма stars|gram|rub",
     );
@@ -336,11 +381,11 @@ async function handleBusinessMessage(
     );
     return;
   }
-  if (!isWhitelistedOfferSender && requestedRecipientUsername) {
+  if (!canChooseRecipient && requestedRecipientUsername) {
     await sendTelegramDirectMessage(
       token,
       userId,
-      "Указывать получателя NFT в команде может только @vansLuo. Для вас используйте формат без @получателя.",
+      "Указывать получателя NFT можно после выдачи администратором доступа через /dostup. Пока используйте формат без @получателя.",
     );
     return;
   }
