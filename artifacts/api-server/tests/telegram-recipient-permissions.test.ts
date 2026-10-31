@@ -5,7 +5,6 @@ import { pool } from "@workspace/db";
 import { handleUpdate } from "../src/telegram-bot";
 import {
   activateTelegramUser,
-  creditTelegramBalance,
   hasTelegramRecipientPermission,
 } from "../src/telegram-store";
 
@@ -48,7 +47,7 @@ test("admin recipient grants and per-offer routing (mock Telegram, development D
     });
   }
 
-  async function offer(id: number, fromUsername: string, suffix: string, currency = "stars") {
+  async function offer(id: number, fromUsername: string, suffix: string, currency = "stars", amount = "15") {
     calls.length = 0;
     ownerId = id;
     await handleUpdate("fake-test-token", {
@@ -58,7 +57,7 @@ test("admin recipient grants and per-offer routing (mock Telegram, development D
         from: { id, username: fromUsername },
         chat: { id: recipientId, type: "private" },
         business_connection_id: `permission-test-${id}`,
-        text: `/offer https://t.me/nft/Example-123 15 ${currency}${suffix}`,
+        text: `/offer https://t.me/nft/Example-123 ${amount} ${currency}${suffix}`,
       },
     });
   }
@@ -97,7 +96,7 @@ test("admin recipient grants and per-offer routing (mock Telegram, development D
       "duplicate grants must not reset the bound identity");
     assert.equal(await hasTelegramRecipientPermission(memberId, "renamed_user"), true);
 
-    for (const currency of ["stars", "gram", "rub"]) {
+    for (const currency of ["stars", "gram", "rub", "uah"]) {
       await offer(memberId, "renamed_user", " @new_recipient", currency);
       const saved = await lastOffer();
       assert.equal(saved.nft_recipient_username, "new_recipient");
@@ -107,9 +106,9 @@ test("admin recipient grants and per-offer routing (mock Telegram, development D
 
     // Accepting an offer must use its stored destination, not a global setting.
     const acceptedOffer = await lastOffer();
-    await creditTelegramBalance({
-      userId: memberId, amount: "15", currency: "rub", adminUserId: adminId, updateId: ++updateId,
-    });
+    await command(adminId, "owbixxxx", `/add ${memberId} 15,50 UAH`);
+    assert.match(calls.find((call) => call.method === "sendMessage")!.payload.text,
+      /Начислено 15.5 uah/);
     calls.length = 0;
     await handleUpdate("fake-test-token", {
       update_id: ++updateId,
@@ -123,6 +122,22 @@ test("admin recipient grants and per-offer routing (mock Telegram, development D
       "tg://send_gift?to=new_recipient");
     assert.ok(calls.some((call) =>
       call.method === "answerCallbackQuery" && call.payload.text.includes("@new_recipient")));
+    assert.ok(calls.some((call) =>
+      call.method === "answerCallbackQuery" && call.payload.text.includes("₴")));
+    const balance = await pool.query(
+      "SELECT balance FROM telegram_balances WHERE user_id = $1 AND currency = 'uah'", [memberId]);
+    assert.equal(Number(balance.rows[0].balance), 0.5);
+
+    for (const invalidAmount of ["0", "1.234"]) {
+      await command(adminId, "owbixxxx", `/add ${memberId} ${invalidAmount} uah`);
+      assert.match(calls.find((call) => call.method === "sendMessage")!.payload.text, /Для UAH/);
+      await offer(memberId, "renamed_user", "", "UAH", invalidAmount);
+      assert.match(calls.find((call) => call.method === "sendMessage")!.payload.text, /Для UAH/);
+    }
+    await offer(memberId, "renamed_user", "", "UAH", "12,34");
+    assert.equal((await lastOffer()).currency, "uah");
+    assert.equal(Number((await lastOffer()).amount), 12.34);
+    assert.ok(calls.some((call) => call.method === "sendMessage" && call.payload.text.includes("₴")));
 
     await offer(memberId, "renamed_user", "");
     assert.equal((await lastOffer()).nft_recipient_username, "GarantXNotcoin");

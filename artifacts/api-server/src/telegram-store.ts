@@ -10,7 +10,7 @@ import {
   telegramRecipientPermissions,
 } from "@workspace/db";
 
-export type TelegramCurrency = "stars" | "gram" | "rub";
+export type TelegramCurrency = "stars" | "gram" | "rub" | "uah";
 
 export async function grantTelegramRecipientPermission(
   username: string,

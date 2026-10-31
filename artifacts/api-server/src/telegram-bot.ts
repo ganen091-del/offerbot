@@ -79,12 +79,12 @@ const DEFAULT_NFT_RECIPIENT_USERNAME = "GarantXNotcoin";
 const OFFER_COMMAND =
   /^\/offer(?:@[A-Za-z0-9_]+)?(?:\s|$)/i;
 const OFFER_FORMAT =
-  /^\/offer(?:@[A-Za-z0-9_]+)?\s+(https:\/\/t\.me\/nft\/[A-Za-z0-9_-]+)\s+(\d+(?:[.,]\d+)?)\s+(stars?|gram|rub)(?:\s+@([A-Za-z0-9_]{5,32}))?$/i;
+  /^\/offer(?:@[A-Za-z0-9_]+)?\s+(https:\/\/t\.me\/nft\/[A-Za-z0-9_-]+)\s+(\d+(?:[.,]\d+)?)\s+(stars?|gram|rub|uah)(?:\s+@([A-Za-z0-9_]{5,32}))?$/i;
 const ADD_COMMAND = /^\/add(?:@[A-Za-z0-9_]+)?(?:\s|$)/i;
 const DOSTUP_COMMAND = /^\/dostup(?:@[A-Za-z0-9_]+)?(?:\s|$)/i;
 const DOSTUP_FORMAT = /^\/dostup(?:@[A-Za-z0-9_]+)?\s+@?([A-Za-z0-9_]{5,32})$/i;
 const ADD_FORMAT =
-  /^\/add(?:@[A-Za-z0-9_]+)?\s+(\d{1,15})\s+(\d{1,22}(?:[.,]\d{1,8})?)\s+(stars?|gram|rub)$/i;
+  /^\/add(?:@[A-Za-z0-9_]+)?\s+(\d{1,15})\s+(\d{1,22}(?:[.,]\d{1,8})?)\s+(stars?|gram|rub|uah)$/i;
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -236,7 +236,7 @@ async function handleAddCommand(
   if (!match) {
     await callTelegram(token, "sendMessage", {
       chat_id: message.chat.id,
-      text: "Формат: /add <telegram_id> <сумма> stars|gram|rub",
+      text: "Формат: /add <telegram_id> <сумма> stars|gram|rub|uah",
     });
     return;
   }
@@ -359,8 +359,8 @@ async function handleBusinessMessage(
       token,
       userId,
       canChooseRecipient
-        ? "Формат: /offer https://t.me/nft/Collection-123 сумма stars|gram|rub @получатель"
-        : "Формат: /offer https://t.me/nft/Collection-123 сумма stars|gram|rub",
+        ? "Формат: /offer https://t.me/nft/Collection-123 сумма stars|gram|rub|uah @получатель"
+        : "Формат: /offer https://t.me/nft/Collection-123 сумма stars|gram|rub|uah",
     );
     return;
   }
@@ -518,7 +518,7 @@ function normalizeAmount(
   if (currency === "stars" && !/^\d+$/.test(amount)) {
     return undefined;
   }
-  if (currency === "rub" && !/^\d+(?:\.\d{1,2})?$/.test(amount)) {
+  if ((currency === "rub" || currency === "uah") && !/^\d+(?:\.\d{1,2})?$/.test(amount)) {
     return undefined;
   }
   if (!/[1-9]/.test(amount)) {
@@ -534,18 +534,21 @@ function parseCurrency(input: string): TelegramCurrency {
   const normalized = input.toLowerCase();
   if (normalized.startsWith("star")) return "stars";
   if (normalized === "rub") return "rub";
+  if (normalized === "uah") return "uah";
   return "gram";
 }
 
 function getCurrencyLabel(currency: TelegramCurrency): string {
   if (currency === "stars") return "⭐";
   if (currency === "rub") return "₽";
+  if (currency === "uah") return "₴";
   return "gram";
 }
 
 function getAmountError(currency: TelegramCurrency): string {
   if (currency === "stars") return "Для Stars укажи положительное целое число.";
   if (currency === "rub") return "Для RUB укажи положительную сумму, максимум 2 знака после запятой.";
+  if (currency === "uah") return "Для UAH укажи положительную сумму, максимум 2 знака после запятой.";
   return "Для Gram укажи положительную сумму, максимум 8 знаков после запятой.";
 }
 

@@ -1,9 +1,9 @@
 ---
 name: Offer bot balance rules
-description: Product rules for the Telegram NFT offer bot's Stars/Gram accounting.
+description: Product rules for the Telegram NFT offer bot's currency accounting.
 ---
 
-The bot tracks balances denominated in Telegram Stars, Gram, and RUB. Only configured administrators may manually top up a balance; when an offer is accepted, debit the balance of the user who sent `/offer`.
+The bot tracks balances denominated in Telegram Stars, Gram, RUB, and UAH. Only configured administrators may manually top up a balance; when an offer is accepted, debit the balance of the user who sent `/offer`.
 
 **Why:** the user specified this balance behavior.
 
