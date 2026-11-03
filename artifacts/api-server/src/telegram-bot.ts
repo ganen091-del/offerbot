@@ -2,6 +2,12 @@ import { logger } from "./lib/logger";
 import { randomUUID } from "node:crypto";
 import { pool } from "@workspace/db";
 import {
+  currentPollingSignal,
+  runTelegramPolling,
+  telegramRequestSignal,
+  type PollingState,
+} from "./telegram-polling-runtime";
+import {
   acceptTelegramOffer,
   activateTelegramUser,
   creditTelegramBalance,
@@ -66,11 +72,13 @@ interface TelegramApiResponse<T> {
 const POLLING_TIMEOUT_SECONDS = 50;
 const REQUEST_TIMEOUT_MS = 65_000;
 const RETRY_DELAY_MS = 3_000;
-const POLLING_LOCK_RETRY_DELAY_MS = 5_000;
 const POLLING_CONFLICT_RETRY_DELAY_MS = 5_000;
-const POLLING_LOCK_NAMESPACE = 0x54474c4b;
-const POLLING_LOCK_RESOURCE = 1;
 const businessConnections = new Map<string, number>();
+const cachedActivityAdminIds = new Set<number>();
+const lastFailureNotices = new Map<string, number>();
+pool.on("error", (error) => {
+  logger.warn({ err: error }, "Idle database connection closed; pool will reconnect");
+});
 const ADMIN_USERNAMES = new Set([
   "owbixxxx",
 ]);
@@ -99,7 +107,7 @@ async function callTelegram<T>(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    signal: telegramRequestSignal(method === "getUpdates" ? REQUEST_TIMEOUT_MS : 15_000),
   });
 
   const result = (await response.json()) as TelegramApiResponse<T>;
@@ -113,6 +121,7 @@ async function callTelegram<T>(
       status: response.status,
       apiErrorCode: result.error_code,
       retryAfter: result.parameters?.retry_after,
+      telegramMethod: method,
     });
     throw error;
   }
@@ -157,6 +166,7 @@ export async function handleUpdate(
     const registeredAdmin = username === "owbixxxx";
     if (registeredAdmin) {
       await registerTelegramActivityAdmin({ userId, username });
+      cachedActivityAdminIds.add(userId);
     }
     await callTelegram(token, "sendMessage", {
       chat_id: message.chat.id,
@@ -620,16 +630,19 @@ async function notifyOfferAdmins(
   token: string,
   text: string,
   eventKey: string,
+  excludeUserId?: number,
 ): Promise<void> {
-  let adminIds: number[];
+  let adminIds = [...cachedActivityAdminIds];
   try {
     adminIds = await getTelegramActivityAdminIds();
+    cachedActivityAdminIds.clear();
+    for (const id of adminIds) cachedActivityAdminIds.add(id);
   } catch (error) {
     logger.error({ err: error, eventKey }, "Unable to load offer activity admins");
-    return;
   }
 
   for (const adminId of adminIds) {
+    if (adminId === excludeUserId) continue;
     try {
       await sendTelegramDirectMessage(token, adminId, text);
     } catch (error) {
@@ -638,6 +651,65 @@ async function notifyOfferAdmins(
         "Unable to send offer activity notification",
       );
     }
+  }
+}
+
+function describeFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("PEER_FLOOD")) {
+    return "Telegram отклонил отправку: PEER_FLOOD (антиспам-ограничение). Не отправляйте команду многократно. Проверьте ограничения подключённого Business-аккаунта через @SpamBot. Бот не может снять это ограничение.";
+  }
+  const retryAfter = getRetryAfter(error);
+  if (getStatus(error) === 429) {
+    return `Telegram ограничил частоту запросов.${retryAfter ? ` Подождите минимум ${retryAfter} сек.` : " Попробуйте позже."}`;
+  }
+  if (getStatus(error) === 403) {
+    return "Telegram запретил действие. Проверьте блокировку бота и его доступ к нужному чату.";
+  }
+  if (/BUSINESS|not enough rights|CHAT_WRITE_FORBIDDEN/i.test(message)) {
+    return "Telegram отклонил действие в Business-чате. Проверьте подключение бота и разрешения на отправку и удаление сообщений.";
+  }
+  if (typeof error === "object" && error !== null && "code" in error &&
+      /^(08|57P0|ECONN|ETIMEDOUT)/.test(String(error.code))) {
+    return "Соединение с базой прервано. Бот автоматически переподключается.";
+  }
+  // Never forward raw network exceptions: they may contain request URLs/tokens.
+  return `Не удалось завершить действие.${getStatus(error) ? ` Код Telegram: ${getStatus(error)}.` : " Возможен временный сбой сети или базы."} Проверьте чат перед повтором: действие могло выполниться частично.`;
+}
+
+function shouldNotifyFailure(key: string): boolean {
+  const now = Date.now();
+  if (now - (lastFailureNotices.get(key) ?? 0) < 60_000) return false;
+  if (lastFailureNotices.size >= 1_000) {
+    for (const [oldKey, at] of lastFailureNotices) {
+      if (now - at >= 60_000) lastFailureNotices.delete(oldKey);
+    }
+    if (lastFailureNotices.size >= 1_000) lastFailureNotices.clear();
+  }
+  lastFailureNotices.set(key, now);
+  return true;
+}
+
+export async function processTelegramUpdate(token: string, update: TelegramUpdate): Promise<void> {
+  try {
+    await handleUpdate(token, update);
+  } catch (error) {
+    // The supervisor reports interruption/recovery after a lost session.
+    if (currentPollingSignal()?.aborted) throw error;
+    logger.error({ err: error, updateId: update.update_id }, "Failed to process Telegram update");
+    const actor = update.business_message?.from ?? update.message?.from ?? update.callback_query?.from;
+    const reason = describeFailure(error);
+    const key = `${actor?.id ?? "unknown"}:${reason}`;
+    if (!shouldNotifyFailure(key)) return;
+    const text = `Не удалось завершить команду или действие${actor ? ` от ${formatTelegramUser(actor.id, actor.username)}` : ""}.\n\n${reason}`;
+    if (actor) {
+      try {
+        await sendTelegramDirectMessage(token, actor.id, text);
+      } catch (notificationError) {
+        logger.warn({ err: notificationError }, "Unable to notify Telegram user about failure");
+      }
+    }
+    await notifyOfferAdmins(token, text, `failure:${update.update_id}`, actor?.id);
   }
 }
 
@@ -831,7 +903,12 @@ function getRetryAfter(error: unknown): number | undefined {
   return typeof retryAfter === "number" ? retryAfter : undefined;
 }
 
-async function pollTelegram(token: string): Promise<never> {
+export async function pollTelegram(
+  token: string,
+  signal: AbortSignal,
+  state: PollingState,
+  ready: () => Promise<void>,
+): Promise<void> {
   const bot = await callTelegram<{
     id: number;
     username?: string;
@@ -841,16 +918,25 @@ async function pollTelegram(token: string): Promise<never> {
     "Telegram bot connected; polling for messages",
   );
 
-  let offset: number | undefined;
+  // Populate the fallback cache while the database is available.
+  try {
+    const adminIds = await getTelegramActivityAdminIds();
+    cachedActivityAdminIds.clear();
+    for (const id of adminIds) cachedActivityAdminIds.add(id);
+  } catch (error) {
+    logger.warn({ err: error }, "Unable to refresh Telegram admin cache");
+  }
+  await ready();
   let conflictRetryDelay = POLLING_CONFLICT_RETRY_DELAY_MS;
 
   while (true) {
+    signal.throwIfAborted();
     try {
       const updates = await callTelegram<TelegramUpdate[]>(
         token,
         "getUpdates",
         {
-          ...(offset === undefined ? {} : { offset }),
+          ...(state.offset === undefined ? {} : { offset: state.offset }),
           timeout: POLLING_TIMEOUT_SECONDS,
           allowed_updates: [
             "message",
@@ -863,18 +949,15 @@ async function pollTelegram(token: string): Promise<never> {
       conflictRetryDelay = POLLING_CONFLICT_RETRY_DELAY_MS;
 
       for (const update of updates) {
+        signal.throwIfAborted();
         try {
-          await handleUpdate(token, update);
-        } catch (error) {
-          logger.error(
-            { err: error, updateId: update.update_id },
-            "Failed to process Telegram update",
-          );
+          await processTelegramUpdate(token, update);
         } finally {
-          offset = update.update_id + 1;
+          state.offset = update.update_id + 1;
         }
       }
     } catch (error) {
+      if (signal.aborted) throw error;
       const status = getStatus(error);
       if (status === 401) {
         throw error;
@@ -902,31 +985,6 @@ async function pollTelegram(token: string): Promise<never> {
   }
 }
 
-async function acquireTelegramPollingLock() {
-  const client = await pool.connect();
-  try {
-    while (true) {
-      const result = await client.query<{ acquired: boolean }>(
-        "SELECT pg_try_advisory_lock($1::integer, $2::integer) AS acquired",
-        [POLLING_LOCK_NAMESPACE, POLLING_LOCK_RESOURCE],
-      );
-      if (result.rows[0]?.acquired) {
-        logger.info("Acquired Telegram polling lock");
-        return client;
-      }
-
-      logger.info(
-        { retryDelay: POLLING_LOCK_RETRY_DELAY_MS },
-        "Another instance owns Telegram polling; waiting",
-      );
-      await delay(POLLING_LOCK_RETRY_DELAY_MS);
-    }
-  } catch (error) {
-    client.release();
-    throw error;
-  }
-}
-
 export function startTelegramBot(): void {
   const isProduction = process.env["NODE_ENV"] === "production";
   const token = isProduction
@@ -944,14 +1002,19 @@ export function startTelegramBot(): void {
     );
   }
 
-  void (async () => {
-    const lockClient = await acquireTelegramPollingLock();
-    try {
-      await pollTelegram(token);
-    } finally {
-      lockClient.release();
-    }
-  })().catch((error: unknown) => {
+  void runTelegramPolling({
+    connect: () => pool.connect(),
+    poll: (signal, state, ready) => pollTelegram(token, signal, state, ready),
+    log: (error) => logger.warn({ err: error }, "Telegram polling interrupted; reconnecting"),
+    notify: async (event, error) => {
+      const text = event === "recovered"
+        ? "Соединение с базой восстановлено. Обработка сообщений возобновляется. Если команда была прервана, проверьте чат перед повторной отправкой."
+        : `Обработка сообщений приостановлена. Бот автоматически переподключается.\n${describeFailure(error)}`;
+      if (event === "recovered" || shouldNotifyFailure(`runtime:${describeFailure(error)}`)) {
+        await notifyOfferAdmins(token, text, `runtime:${event}`);
+      }
+    },
+  }).catch((error: unknown) => {
     logger.error({ err: error }, "Telegram bot stopped");
     process.exit(1);
   });

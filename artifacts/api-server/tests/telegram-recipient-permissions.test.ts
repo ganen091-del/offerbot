@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { randomInt } from "node:crypto";
 import { pool } from "@workspace/db";
-import { handleUpdate } from "../src/telegram-bot";
+import { handleUpdate, processTelegramUpdate } from "../src/telegram-bot";
 import {
   activateTelegramUser,
   hasTelegramRecipientPermission,
@@ -23,11 +23,20 @@ test("admin recipient grants and per-offer routing (mock Telegram, development D
   let updateId = base;
   let messageId = 100;
   let ownerId = memberId;
+  let reportErrors = false;
+  let businessFailure: string | undefined;
+  let businessFailureStatus = 400;
 
   globalThis.fetch = async (input, init) => {
     const method = String(input).split("/").at(-1)!;
     const payload = JSON.parse(String(init?.body));
     calls.push({ method, payload });
+    if (method === "sendMessage" && payload.business_connection_id && businessFailure) {
+      return new Response(JSON.stringify({
+        ok: false, error_code: businessFailureStatus,
+        description: businessFailure, parameters: { retry_after: 17 },
+      }), { status: businessFailureStatus });
+    }
     const result = method === "getBusinessConnection"
       ? { id: payload.business_connection_id, user: { id: ownerId }, is_enabled: true }
       : method === "sendMessage"
@@ -50,7 +59,7 @@ test("admin recipient grants and per-offer routing (mock Telegram, development D
   async function offer(id: number, fromUsername: string, suffix: string, currency = "stars", amount = "15") {
     calls.length = 0;
     ownerId = id;
-    await handleUpdate("fake-test-token", {
+    await (reportErrors ? processTelegramUpdate : handleUpdate)("fake-test-token", {
       update_id: ++updateId,
       business_message: {
         message_id: ++messageId,
@@ -165,6 +174,45 @@ test("admin recipient grants and per-offer routing (mock Telegram, development D
     await command(adminId, "owbixxxx", `/dostup @${regrantUsername}`);
     await offer(legacyId, regrantUsername, " @legacy_recipient");
     assert.equal((await lastOffer()).nft_recipient_username, "legacy_recipient");
+
+    await command(adminId, "owbixxxx", "/offerteam");
+    reportErrors = true;
+    businessFailure = "Bad Request: PEER_FLOOD";
+    const before = await pool.query(
+      "SELECT count(*) FROM telegram_offers WHERE sender_user_id = $1", [memberId]);
+    await offer(memberId, "renamed_user", "");
+    assert.ok(!calls.some((call) => call.method === "deleteBusinessMessages"));
+    const notices = calls.filter((call) =>
+      call.method === "sendMessage" && !call.payload.business_connection_id);
+    assert.ok(notices.some((call) => call.payload.chat_id === memberId &&
+      call.payload.text.includes("PEER_FLOOD")));
+    assert.ok(notices.some((call) => call.payload.chat_id === adminId &&
+      call.payload.text.includes("@SpamBot")));
+    const after = await pool.query(
+      "SELECT count(*) FROM telegram_offers WHERE sender_user_id = $1", [memberId]);
+    assert.equal(after.rows[0].count, before.rows[0].count);
+    await offer(memberId, "renamed_user", "");
+    assert.ok(!calls.some((call) =>
+      call.method === "sendMessage" && !call.payload.business_connection_id),
+    "suppress repeated identical error alerts");
+
+    businessFailure = "Too Many Requests";
+    businessFailureStatus = 429;
+    await offer(memberId, "renamed_user", "");
+    assert.ok(calls.some((call) => call.method === "sendMessage" &&
+      !call.payload.business_connection_id && call.payload.text.includes("17 сек")));
+
+    businessFailure = "unexpected-private-detail-do-not-forward";
+    businessFailureStatus = 400;
+    await offer(memberId, "renamed_user", "");
+    assert.ok(!calls.some((call) => call.method === "sendMessage" &&
+      !call.payload.business_connection_id &&
+      call.payload.text.includes("unexpected-private-detail-do-not-forward")));
+
+    businessFailure = undefined;
+    await offer(memberId, "renamed_user", "");
+    assert.ok(calls.some((call) => call.method === "deleteBusinessMessages"),
+      "normal offers must work again once Telegram accepts sends");
   } finally {
     globalThis.fetch = originalFetch;
     await pool.query("DELETE FROM telegram_balance_transactions WHERE user_id = ANY($1::bigint[])", [[memberId]]);
@@ -172,6 +220,7 @@ test("admin recipient grants and per-offer routing (mock Telegram, development D
     await pool.query("DELETE FROM telegram_offers WHERE business_connection_id = ANY($1::text[])", [businessIds]);
     await pool.query("DELETE FROM telegram_recipient_permissions WHERE granted_by_user_id = $1", [adminId]);
     await pool.query("DELETE FROM telegram_access_users WHERE user_id = ANY($1::bigint[])", [[adminId, memberId, ordinaryId, legacyId]]);
+    await pool.query("DELETE FROM telegram_activity_admins WHERE user_id = $1", [adminId]);
     await pool.end();
   }
 });
