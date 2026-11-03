@@ -176,6 +176,24 @@ test("admin recipient grants and per-offer routing (mock Telegram, development D
     assert.equal((await lastOffer()).nft_recipient_username, "legacy_recipient");
 
     await command(adminId, "owbixxxx", "/offerteam");
+    await command(ordinaryId, "ordinary_test", `/offers ${legacyId}`);
+    assert.match(calls.find((call) => call.method === "sendMessage")!.payload.text,
+      /доступна только @owbixxxx/);
+    await command(adminId, "owbixxxx", `/offers ${legacyId}`);
+    assert.match(calls.find((call) => call.method === "sendMessage")!.payload.text,
+      /История отправленных офферов/);
+    calls.length = 0;
+    await handleUpdate("fake-test-token", {
+      update_id: ++updateId,
+      callback_query: {
+        id: "unauthorized-history", from: { id: ordinaryId, username: "ordinary_test" },
+        data: `offers:${legacyId}:0`,
+        message: { message_id: 1, chat: { id: ordinaryId, type: "private" } },
+      },
+    });
+    assert.ok(!calls.some((call) => call.method === "editMessageText"));
+    assert.match(calls[0]!.payload.text, /только @owbixxxx/);
+
     reportErrors = true;
     businessFailure = "Bad Request: PEER_FLOOD";
     const before = await pool.query(

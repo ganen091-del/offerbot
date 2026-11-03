@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, gte, isNull, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, isNull, sql } from "drizzle-orm";
 import {
   db,
   telegramActivityAdmins,
@@ -11,6 +11,22 @@ import {
 } from "@workspace/db";
 
 export type TelegramCurrency = "stars" | "gram" | "rub" | "uah";
+
+export async function getTelegramOfferHistory(userId: number, requestedPage: number) {
+  const pageSize = 5;
+  return db.transaction(async (tx) => {
+    const [summary] = await tx.select({ total: count() }).from(telegramOffers)
+      .where(eq(telegramOffers.senderUserId, userId));
+    const total = summary?.total ?? 0;
+    const pages = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.min(Math.max(0, requestedPage), pages - 1);
+    const offers = await tx.select().from(telegramOffers)
+      .where(eq(telegramOffers.senderUserId, userId))
+      .orderBy(desc(telegramOffers.createdAt), desc(telegramOffers.id))
+      .limit(pageSize).offset(page * pageSize);
+    return { userId, offers, total, page, pages };
+  }, { isolationLevel: "repeatable read", accessMode: "read only" });
+}
 
 export async function grantTelegramRecipientPermission(
   username: string,

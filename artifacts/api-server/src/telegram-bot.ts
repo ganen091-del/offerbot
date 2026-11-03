@@ -1,6 +1,7 @@
 import { logger } from "./lib/logger";
 import { randomUUID } from "node:crypto";
 import { pool } from "@workspace/db";
+import { OFFERS_COMMAND, sendOfferHistory, turnOfferHistoryPage } from "./telegram-offer-history";
 import {
   currentPollingSignal,
   runTelegramPolling,
@@ -49,6 +50,7 @@ interface TelegramCallbackQuery {
   id: string;
   from: TelegramUser;
   data?: string;
+  message?: TelegramMessage;
 }
 
 interface TelegramUpdate {
@@ -185,6 +187,17 @@ export async function handleUpdate(
 
   if (DOSTUP_COMMAND.test(text)) {
     await handleDostupCommand(token, message, userId, text);
+    return;
+  }
+
+  if (OFFERS_COMMAND.test(text)) {
+    if (!(await isTelegramUserActivated(userId))) return;
+    await sendOfferHistory(
+      (method, payload) => callTelegram(token, method, payload),
+      message.chat.id,
+      text,
+      ADMIN_USERNAMES.has(message.from?.username?.toLowerCase() ?? ""),
+    );
   }
 }
 
@@ -745,6 +758,16 @@ async function handleCallbackQuery(
   token: string,
   query: TelegramCallbackQuery,
 ): Promise<void> {
+  if (query.data?.startsWith("offers:")) {
+    const authorized = ADMIN_USERNAMES.has(query.from.username?.toLowerCase() ?? "") &&
+      await isTelegramUserActivated(query.from.id);
+    await turnOfferHistoryPage(
+      (method, payload) => callTelegram(token, method, payload),
+      query,
+      authorized,
+    );
+    return;
+  }
   const match = /^offer:(reject|accept):([0-9a-f-]{36})$/i.exec(
     query.data ?? "",
   );

@@ -2,6 +2,7 @@ import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import {
   bigint,
+  index,
   integer,
   numeric,
   pgTable,
@@ -89,7 +90,7 @@ export const telegramOffers = pgTable("telegram_offers", {
     .notNull()
     .defaultNow()
     .$onUpdate(() => new Date()),
-});
+}, (table) => [index("telegram_offers_sender_created_idx").on(table.senderUserId, table.createdAt)]);
 
 export const insertTelegramAccessUserSchema =
   createInsertSchema(telegramAccessUsers).omit({ activatedAt: true });

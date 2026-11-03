@@ -2,3 +2,4 @@
 - [Telegram Business deletion](telegram-business-message-deletion.md) — use `deleteBusinessMessages` for connected Business chats, not `deleteMessage`.
 - [Telegram polling rollouts](telegram-polling-rollouts.md) — VM revisions can overlap; coordinate polling and keep development off the production token.
 - [Offer recipient access](offer-recipient-access.md) — admins grant custom per-offer destinations; otherwise preserve the original default.
+- [Offer history identity](offer-history-identity.md) — admin history uses Telegram ID directly; targets need not contact the bot.
