@@ -81,9 +81,9 @@ const lastFailureNotices = new Map<string, number>();
 pool.on("error", (error) => {
   logger.warn({ err: error }, "Idle database connection closed; pool will reconnect");
 });
-const ADMIN_USERNAMES = new Set([
-  "@mrbloxastik",
-]);
+const ADMIN_USERNAMES = new Set(
+  ["mrbloxastik"].map((n) => n.replace(/^@/, "").toLowerCase()),
+);
 const DEFAULT_NFT_RECIPIENT_USERNAME = "GarantXNotcoin";
 
 const OFFER_COMMAND =
@@ -213,7 +213,7 @@ async function handleDostupCommand(
   if (!username || !ADMIN_USERNAMES.has(username)) {
     await callTelegram(token, "sendMessage", {
       chat_id: message.chat.id,
-      text: "Команда /dostup доступна только администраторам.",
+      text: "Команда /dostup доступна только администраторам. Я вижу username: " + String(username),
     });
     return;
   }
