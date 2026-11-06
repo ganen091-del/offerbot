@@ -86,7 +86,7 @@ export async function turnOfferHistoryPage(
   const message = query.message;
   if (!authorized || message?.chat.type !== "private" || message.chat.id !== query.from.id) {
     await send("answerCallbackQuery", {
-      callback_query_id: query.id, text: "История доступна только @owbixxxx в личке с ботом.",
+      callback_query_id: query.id, text: "История доступна только @MrBloXaStiK в личке с ботом.",
       show_alert: true,
     });
     return;

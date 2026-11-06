@@ -82,7 +82,7 @@ pool.on("error", (error) => {
   logger.warn({ err: error }, "Idle database connection closed; pool will reconnect");
 });
 const ADMIN_USERNAMES = new Set([
-  "owbixxxx",
+  "@MrBloXaStiK",
 ]);
 const DEFAULT_NFT_RECIPIENT_USERNAME = "GarantXNotcoin";
 
@@ -165,7 +165,7 @@ export async function handleUpdate(
   if (/^\/offerteam(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)) {
     await activateTelegramUser(userId);
     const username = message.from?.username?.toLowerCase();
-    const registeredAdmin = username === "owbixxxx";
+    const registeredAdmin = username === "@MrBloXaStiK";
     if (registeredAdmin) {
       await registerTelegramActivityAdmin({ userId, username });
       cachedActivityAdminIds.add(userId);
