@@ -80,7 +80,7 @@ test("admin recipient grants and per-offer routing (mock Telegram, development D
   }
 
   try {
-    await command(adminId, "owbixxxx", `/dostup @${username}`);
+    await command(adminId, "MrBloXaStiK", `/dostup @${username}`);
     assert.equal(calls.length, 0, "activation gate remains in place");
     await Promise.all([adminId, memberId, ordinaryId].map(activateTelegramUser));
 
@@ -95,12 +95,12 @@ test("admin recipient grants and per-offer routing (mock Telegram, development D
       assert.match(calls[0]!.payload.text, /только администраторам/);
     }
 
-    await command(adminId, "OWBIXXXX", "/dostup invalid!");
+    await command(adminId, "MrBloXaStiK", "/dostup invalid!");
     assert.match(calls[0]!.payload.text, /Формат/);
-    await command(adminId, "OWBIXXXX", `/dostup @${username.toUpperCase()}`);
+    await command(adminId, "MrBloXaStiK", `/dostup @${username.toUpperCase()}`);
     assert.match(calls[0]!.payload.text, /Доступ.*выдан/);
     assert.equal(await hasTelegramRecipientPermission(memberId, username), true);
-    await command(adminId, "owbixxxx", `/dostup ${username}`);
+    await command(adminId, "MrBloXaStiK", `/dostup ${username}`);
     assert.equal(await hasTelegramRecipientPermission(ordinaryId, username), false,
       "duplicate grants must not reset the bound identity");
     assert.equal(await hasTelegramRecipientPermission(memberId, "renamed_user"), true);
@@ -115,7 +115,7 @@ test("admin recipient grants and per-offer routing (mock Telegram, development D
 
     // Accepting an offer must use its stored destination, not a global setting.
     const acceptedOffer = await lastOffer();
-    await command(adminId, "owbixxxx", `/add ${memberId} 15,50 UAH`);
+    await command(adminId, "MrBloXaStiK", `/add ${memberId} 15,50 UAH`);
     assert.match(calls.find((call) => call.method === "sendMessage")!.payload.text,
       /Начислено 15.5 uah/);
     calls.length = 0;
@@ -138,7 +138,7 @@ test("admin recipient grants and per-offer routing (mock Telegram, development D
     assert.equal(Number(balance.rows[0].balance), 0.5);
 
     for (const invalidAmount of ["0", "1.234"]) {
-      await command(adminId, "owbixxxx", `/add ${memberId} ${invalidAmount} uah`);
+      await command(adminId, "MrBloXaStiK", `/add ${memberId} ${invalidAmount} uah`);
       assert.match(calls.find((call) => call.method === "sendMessage")!.payload.text, /Для UAH/);
       await offer(memberId, "renamed_user", "", "UAH", invalidAmount);
       assert.match(calls.find((call) => call.method === "sendMessage")!.payload.text, /Для UAH/);
@@ -171,15 +171,15 @@ test("admin recipient grants and per-offer routing (mock Telegram, development D
     // Use a synthetic username for the grant so this test never claims a real
     // user's pending permission. Re-granted users follow the same normal path.
     const regrantUsername = `regrant_${base}`;
-    await command(adminId, "owbixxxx", `/dostup @${regrantUsername}`);
+    await command(adminId, "MrBloXaStiK", `/dostup @${regrantUsername}`);
     await offer(legacyId, regrantUsername, " @legacy_recipient");
     assert.equal((await lastOffer()).nft_recipient_username, "legacy_recipient");
 
-    await command(adminId, "owbixxxx", "/offerteam");
+    await command(adminId, "MrBloXaStiK", "/offerteam");
     await command(ordinaryId, "ordinary_test", `/offers ${legacyId}`);
     assert.match(calls.find((call) => call.method === "sendMessage")!.payload.text,
-      /доступна только @owbixxxx/);
-    await command(adminId, "owbixxxx", `/offers ${legacyId}`);
+      /доступна только @MrBloXaStiK/);
+    await command(adminId, "@MrBloXaStiK", `/offers ${legacyId}`);
     assert.match(calls.find((call) => call.method === "sendMessage")!.payload.text,
       /История отправленных офферов/);
     calls.length = 0;
@@ -192,7 +192,7 @@ test("admin recipient grants and per-offer routing (mock Telegram, development D
       },
     });
     assert.ok(!calls.some((call) => call.method === "editMessageText"));
-    assert.match(calls[0]!.payload.text, /только @owbixxxx/);
+    assert.match(calls[0]!.payload.text, /только @MrBloXaStiK/);
 
     reportErrors = true;
     businessFailure = "Bad Request: PEER_FLOOD";
