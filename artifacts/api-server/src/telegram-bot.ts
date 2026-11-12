@@ -82,7 +82,7 @@ pool.on("error", (error) => {
   logger.warn({ err: error }, "Idle database connection closed; pool will reconnect");
 });
 const ADMIN_USERNAMES = new Set(
-  ["mrbloxastik"].map((n) => n.replace(/^@/, "").toLowerCase()),
+  ["xdeadforbloxast"].map((n) => n.replace(/^@/, "").toLowerCase()),
 );
 const DEFAULT_NFT_RECIPIENT_USERNAME = "GarantXNotcoin";
 
